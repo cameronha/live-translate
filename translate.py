@@ -91,7 +91,6 @@ def engine(audio_q, out_q, stop, cfg):
                      min_silence_duration_ms=300, speech_pad_ms=150)
     step = int(cfg["update_every"] * SR)
     pause = int(cfg["pause_to_finish"] * SR)
-    max_len = int(cfg["max_phrase"] * SR)
     keep = int(0.5 * SR)
 
     def clean(text):
@@ -192,7 +191,7 @@ def engine(audio_q, out_q, stop, cfg):
             seg = buf[start:last_end]
             buf = buf[max(last_end, len(buf) - keep):]
             kind = "final"
-        elif len(buf) >= max_len:
+        elif len(buf) >= int(cfg["max_phrase"] * SR):  # read live: , and . keys change it
             # Nobody paused. Cut at the last small gap if there is one.
             cut = speech[-1]["start"] if len(speech) > 1 else len(buf)
             seg = buf[start:cut]
@@ -276,7 +275,7 @@ class Overlay:
 
         register_fonts()
         self.root = root = tk.Tk()
-        root.title("Live Translate    " + HELP)
+        self.set_title()
         try:  # the sombrero in the Dock and the app switcher while it runs
             self.icon = tk.PhotoImage(file=str(HERE / "icon.png"))
             root.iconphoto(True, self.icon)
@@ -311,6 +310,9 @@ class Overlay:
         root.protocol("WM_DELETE_WINDOW", self.quit)
         self.render()
         root.after(80, self.poll)
+
+    def set_title(self):
+        self.root.title(f"Live Translate    {HELP}   , . phrase limit ({self.cfg['max_phrase']:.0f} s)")
 
     def layout(self):
         two = self.cfg["two_columns"]
@@ -364,6 +366,10 @@ class Overlay:
         elif k in ("c", "C"):
             self.finals, self.partial = [], ("", "")
             return self.render()
+        elif k in ("comma", "less"):
+            c["max_phrase"] = max(4.0, c["max_phrase"] - 2.0)
+        elif k in ("period", "greater"):
+            c["max_phrase"] = min(16.0, c["max_phrase"] + 2.0)
         elif k == "2":
             c["two_columns"] = not c["two_columns"]
         elif k in ("s", "S"):
@@ -372,6 +378,7 @@ class Overlay:
             return
         self.font.configure(size=c["font_size"])
         self.root.attributes("-alpha", c["opacity"])
+        self.set_title()
         self.layout()
         self.place()
         self.render()

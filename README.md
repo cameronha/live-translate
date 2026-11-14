@@ -6,7 +6,7 @@ A floating caption strip for the Mac. It listens to the laptop microphone and sh
 
 - Start: click `Live Translate.app` (or double-click `Start Translator.command`).
 - Stop: `Esc`.
-- Keys (click the strip first): `+`/`-` font size, `[`/`]` lines, up/down opacity, left/right width, `T` top/bottom, `S` speaker colors, `2` two columns (Spanish | English), `C` clear.
+- Keys (click the strip first): `+`/`-` font size, `[`/`]` lines, up/down opacity, left/right width, `T` top/bottom, `S` speaker colors, `2` two columns (Spanish | English), `,`/`.` phrase limit shorter/longer, `C` clear.
 - Settings are saved in `settings.json`.
 
 ## How it works

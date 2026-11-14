@@ -1,0 +1,5 @@
+venv/
+models/
+settings.json
+last-run.log
+__pycache__/

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleName</key><string>Live Translate</string>
+<key>CFBundleIdentifier</key><string>local.cam.live-translate</string>
+<key>CFBundleExecutable</key><string>launcher</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>LSArchitecturePriority</key><array><string>arm64</string></array>
+<key>LSUIElement</key><true/>
+<key>CFBundleVersion</key><string>1</string>
+<key>NSMicrophoneUsageDescription</key><string>Live Translate listens to the room to show English captions. Audio stays on this Mac.</string>
+</dict></plist>

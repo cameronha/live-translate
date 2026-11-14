@@ -3,3 +3,4 @@ models/
 settings.json
 last-run.log
 __pycache__/
+.DS_Store

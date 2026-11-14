@@ -33,6 +33,7 @@ DEFAULTS = {
     "update_every": 1.0,   # how often to refresh the in-progress phrase
     "pause_to_finish": 0.7,  # silence that ends a phrase
     "max_phrase": 12.0,    # force a cut if nobody pauses
+    "speaker_colors": True,  # guess the voice of each phrase and color it (S key)
 }
 
 # Whisper sometimes invents these on noise. Drop them.
@@ -73,6 +74,12 @@ def engine(audio_q, out_q, stop, cfg):
     except Exception as e:  # model not on disk, etc.
         out_q.put(("status", f"Could not load model '{cfg['model']}': {e}"))
         return
+    guesser = None
+    try:
+        from speaker import SpeakerGuesser
+        guesser = SpeakerGuesser()
+    except Exception as e:  # colors are optional: go on without them
+        print(f"speaker colors off: {e}", file=sys.stderr, flush=True)
     out_q.put(("status", "Listening…"))
 
     vad = VadOptions(threshold=0.5, min_speech_duration_ms=200,
@@ -142,21 +149,25 @@ def engine(audio_q, out_q, stop, cfg):
         last_end = speech[-1]["end"]
         if done or len(buf) - last_end >= pause:
             # Speaker paused: finish the phrase.
-            text = translate(buf[start:last_end])
+            seg = buf[start:last_end]
             buf = buf[max(last_end, len(buf) - keep):]
             kind = "final"
         elif len(buf) >= max_len:
             # Nobody paused. Cut at the last small gap if there is one.
             cut = speech[-1]["start"] if len(speech) > 1 else len(buf)
-            text = translate(buf[start:cut])
+            seg = buf[start:cut]
             buf = buf[cut:]
             kind = "final"
         else:
-            text = translate(buf[start:])
+            seg = buf[start:]
             kind = "partial"
+        text = translate(seg)
         checked = len(buf)
         if text or showing_partial:
             out_q.put((kind, text))
+        if kind == "final" and text and guesser and cfg["speaker_colors"]:
+            # The text is already on screen. The color follows a moment later.
+            out_q.put(("speaker", guesser.identify(seg)))
         showing_partial = kind == "partial" and bool(text)
     out_q.put(("status", "Stopped."))
 
@@ -188,7 +199,8 @@ def feed_file(path, audio_q, stop):
 
 # ---------------------------------------------------------------- window
 
-HELP = "+/- size   [ ] lines   ↑↓ opacity   ←→ width   T top/bottom   C clear   Esc quit"
+HELP = "+/- size   [ ] lines   ↑↓ opacity   ←→ width   T top/bottom   S speaker colors   C clear   Esc quit"
+SPEAKER_COLORS = ["#ffffff", "#ffd166", "#7fdbff", "#b8f2a0", "#ffa8c5", "#c9b6ff"]
 
 
 class Overlay:
@@ -196,7 +208,7 @@ class Overlay:
         import tkinter as tk
         from tkinter import font as tkfont
         self.tk, self.cfg, self.out_q, self.stop = tk, cfg, out_q, stop
-        self.finals, self.partial, self.status = "", "", "Starting…"
+        self.finals, self.partial, self.status = [], "", "Starting…"  # finals: [text, speaker]
 
         self.root = root = tk.Tk()
         root.title("Live Translate    " + HELP)
@@ -208,7 +220,9 @@ class Overlay:
                             font=self.font, bd=0, highlightthickness=0,
                             padx=16, pady=8, cursor="arrow", takefocus=0,
                             spacing1=2, spacing3=2)
-        self.text.tag_configure("partial", foreground="#9fb4c8")
+        self.text.tag_configure("partial", foreground="#8a8f98")
+        for i, color in enumerate(SPEAKER_COLORS):
+            self.text.tag_configure(f"spk{i}", foreground=color)
         self.text.tag_configure("status", foreground="#777777")
         self.text.pack(fill="both", expand=True)
         self.text.configure(state="disabled")
@@ -260,8 +274,10 @@ class Overlay:
             top = c["y"] is not None and c["y"] < self.root.winfo_screenheight() // 2
             c["y"] = (self.root.winfo_screenheight() - self.height() - 110) if top else 40
         elif k in ("c", "C"):
-            self.finals = self.partial = ""
+            self.finals, self.partial = [], ""
             return self.render()
+        elif k in ("s", "S"):
+            c["speaker_colors"] = not c["speaker_colors"]
         else:
             return
         self.font.configure(size=c["font_size"])
@@ -280,10 +296,13 @@ class Overlay:
                     self.status = text
                 elif kind == "partial":
                     self.partial = text
+                elif kind == "speaker":
+                    if self.finals:
+                        self.finals[-1][1] = text
                 else:
                     self.partial = ""
                     if text:
-                        self.finals = (self.finals + " " + text).strip()[-1500:]
+                        self.finals = (self.finals + [[text, None]])[-40:]
         except queue.Empty:
             pass
         if changed:
@@ -295,7 +314,10 @@ class Overlay:
         t.configure(state="normal")
         t.delete("1.0", "end")
         if self.finals or self.partial:
-            t.insert("end", self.finals)
+            colors = self.cfg["speaker_colors"]
+            for i, (phrase, spk) in enumerate(self.finals):
+                tag = f"spk{spk % len(SPEAKER_COLORS)}" if colors and spk is not None else ()
+                t.insert("end", (" " if i else "") + phrase, tag)
             if self.partial:
                 t.insert("end", (" " if self.finals else "") + self.partial, "partial")
         else:

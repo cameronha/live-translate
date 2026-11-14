@@ -277,6 +277,11 @@ class Overlay:
         register_fonts()
         self.root = root = tk.Tk()
         root.title("Live Translate    " + HELP)
+        try:  # the sombrero in the Dock and the app switcher while it runs
+            self.icon = tk.PhotoImage(file=str(HERE / "icon.png"))
+            root.iconphoto(True, self.icon)
+        except Exception as e:
+            print(f"icon not set: {e}", file=sys.stderr, flush=True)
         root.configure(bg="#111111")
         root.attributes("-topmost", True)
         root.attributes("-alpha", cfg["opacity"])

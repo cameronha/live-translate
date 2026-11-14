@@ -23,6 +23,7 @@ SR = 16000  # Whisper wants 16 kHz audio
 
 DEFAULTS = {
     "model": "small",      # "base" is faster but much rougher
+    "font": "Atkinson Hyperlegible",  # falls back to Helvetica Neue if missing
     "font_size": 22,
     "lines": 3,
     "width": 900,
@@ -239,6 +240,28 @@ def feed_file(path, audio_q, stop):
 
 # ---------------------------------------------------------------- window
 
+def register_fonts():
+    """Make the fonts in the project's fonts/ folder usable by this app only.
+    Nothing is installed on the Mac."""
+    import ctypes
+    import ctypes.util
+    try:
+        cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+        ct = ctypes.CDLL(ctypes.util.find_library("CoreText"))
+        cf.CFURLCreateFromFileSystemRepresentation.restype = ctypes.c_void_p
+        cf.CFURLCreateFromFileSystemRepresentation.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_bool]
+        ct.CTFontManagerRegisterFontsForURL.restype = ctypes.c_bool
+        ct.CTFontManagerRegisterFontsForURL.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        for f in sorted((HERE / "fonts").glob("*.ttf")):
+            path = str(f).encode()
+            url = cf.CFURLCreateFromFileSystemRepresentation(None, path, len(path), False)
+            ct.CTFontManagerRegisterFontsForURL(url, 1, None)  # 1 = this process only
+    except Exception as e:
+        print(f"font registration failed: {e}", file=sys.stderr, flush=True)
+
+
 HELP = "+/- size   [ ] lines   ↑↓ opacity   ←→ width   T top/bottom   S speaker colors   2 two columns   C clear   Esc quit"
 SPEAKER_COLORS = ["#ffffff", "#ffd166", "#7fdbff", "#b8f2a0", "#ffa8c5", "#c9b6ff"]
 
@@ -251,12 +274,15 @@ class Overlay:
         self.finals, self.partial, self.status = [], ("", ""), "Starting…"
         # finals: [english, speaker, spanish]   partial: (english, spanish)
 
+        register_fonts()
         self.root = root = tk.Tk()
         root.title("Live Translate    " + HELP)
         root.configure(bg="#111111")
         root.attributes("-topmost", True)
         root.attributes("-alpha", cfg["opacity"])
-        self.font = tkfont.Font(family="Helvetica Neue", size=cfg["font_size"])
+        family = cfg["font"] if cfg["font"] in tkfont.families() else "Helvetica Neue"
+        self.font = tkfont.Font(family=family, size=cfg["font_size"])
+        print(f"font: {self.font.actual('family')}", file=sys.stderr, flush=True)
         def column():
             t = tk.Text(root, wrap="word", bg="#111111", fg="#ffffff",
                         font=self.font, bd=0, highlightthickness=0,

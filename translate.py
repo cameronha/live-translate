@@ -34,6 +34,7 @@ DEFAULTS = {
     "pause_to_finish": 0.7,  # silence that ends a phrase
     "max_phrase": 12.0,    # force a cut if nobody pauses
     "speaker_colors": True,  # guess the voice of each phrase and color it (S key)
+    "two_columns": False,    # Spanish on the left, English on the right (2 key)
 }
 
 # Whisper sometimes invents these on noise. Drop them.
@@ -62,6 +63,9 @@ def save_settings(cfg):
 def engine(audio_q, out_q, stop, cfg):
     """Background thread. Reads audio chunks, emits ("partial"|"final"|"status", text)."""
     from faster_whisper import WhisperModel
+    from faster_whisper.audio import pad_or_trim
+    from faster_whisper.tokenizer import Tokenizer
+    from faster_whisper.transcribe import get_suppressed_tokens
     from faster_whisper.vad import VadOptions, get_speech_timestamps
 
     out_q.put(("status", "Loading model…"))
@@ -89,16 +93,43 @@ def engine(audio_q, out_q, stop, cfg):
     max_len = int(cfg["max_phrase"] * SR)
     keep = int(0.5 * SR)
 
-    def translate(audio):
-        segs, _ = model.transcribe(
-            audio, language="es", task="translate", beam_size=1,
-            temperature=0.0, condition_on_previous_text=False,
-            without_timestamps=True, vad_filter=False)
-        text = " ".join(s.text.strip() for s in segs if s.no_speech_prob < 0.8).strip()
+    def clean(text):
+        text = text.strip()
         # Only drop short junk-only text. A long phrase with real content stays.
         if len(text) < 45 and any(j in text.lower() for j in JUNK):
             return ""
         return text
+
+    def translate(audio):
+        """Return (english, spanish). Spanish is "" unless two-column mode is on."""
+        if not cfg["two_columns"]:
+            segs, _ = model.transcribe(
+                audio, language="es", task="translate", beam_size=1,
+                temperature=0.0, condition_on_previous_text=False,
+                without_timestamps=True, vad_filter=False)
+            return clean(" ".join(s.text.strip() for s in segs if s.no_speech_prob < 0.8)), ""
+        # Two columns: listen to the audio once (the slow part), then write it
+        # twice, in English and in Spanish.
+        enc = model.encode(pad_or_trim(model.feature_extractor(audio[:30 * SR])))
+        out = []
+        for task in ("translate", "transcribe"):
+            tok, prompt, suppress = writers[task]
+            r = model.model.generate(
+                enc, [prompt], beam_size=1, max_length=model.max_length,
+                return_no_speech_prob=True, suppress_blank=True,
+                suppress_tokens=suppress)[0]
+            if r.no_speech_prob >= 0.8:
+                return "", ""
+            out.append(clean(tok.decode(r.sequences_ids[0])))
+            if not out[0]:
+                return "", ""
+        return out[0], out[1]
+
+    writers = {}
+    for task in ("translate", "transcribe"):
+        tok = Tokenizer(model.hf_tokenizer, True, task=task, language="es")
+        writers[task] = (tok, model.get_prompt(tok, [], without_timestamps=True),
+                         get_suppressed_tokens(tok, [-1]))
 
     buf = np.zeros(0, np.float32)
     checked = 0          # buffer length at the last check
@@ -139,7 +170,7 @@ def engine(audio_q, out_q, stop, cfg):
         speech = get_speech_timestamps(buf, vad)
         if not speech:  # silence: no Whisper call at all
             if showing_partial:
-                out_q.put(("partial", ""))
+                out_q.put(("partial", ("", "")))
                 showing_partial = False
             buf = buf[-keep:]
             checked = len(buf)
@@ -147,7 +178,15 @@ def engine(audio_q, out_q, stop, cfg):
 
         start = max(0, speech[0]["start"] - int(0.2 * SR))
         last_end = speech[-1]["end"]
-        if done or len(buf) - last_end >= pause:
+        # A pause in the middle of the buffer (it happens when the processor is
+        # busy and audio piles up): finish the phrase before that pause.
+        gap = next((i for i in range(len(speech) - 1)
+                    if speech[i + 1]["start"] - speech[i]["end"] >= pause - int(0.15 * SR)), None)
+        if gap is not None:
+            seg = buf[start:speech[gap]["end"]]
+            buf = buf[speech[gap]["end"]:]
+            kind = "final"
+        elif done or len(buf) - last_end >= pause:
             # Speaker paused: finish the phrase.
             seg = buf[start:last_end]
             buf = buf[max(last_end, len(buf) - keep):]
@@ -161,10 +200,11 @@ def engine(audio_q, out_q, stop, cfg):
         else:
             seg = buf[start:]
             kind = "partial"
-        text = translate(seg)
-        checked = len(buf)
+        text, spanish = translate(seg)
+        # After a cut in the middle, look at the rest of the buffer without delay.
+        checked = max(0, len(buf) - step) if gap is not None else len(buf)
         if text or showing_partial:
-            out_q.put((kind, text))
+            out_q.put((kind, (text, spanish)))
         if kind == "final" and text and guesser and cfg["speaker_colors"]:
             # The text is already on screen. The color follows a moment later.
             out_q.put(("speaker", guesser.identify(seg)))
@@ -199,7 +239,7 @@ def feed_file(path, audio_q, stop):
 
 # ---------------------------------------------------------------- window
 
-HELP = "+/- size   [ ] lines   ↑↓ opacity   ←→ width   T top/bottom   S speaker colors   C clear   Esc quit"
+HELP = "+/- size   [ ] lines   ↑↓ opacity   ←→ width   T top/bottom   S speaker colors   2 two columns   C clear   Esc quit"
 SPEAKER_COLORS = ["#ffffff", "#ffd166", "#7fdbff", "#b8f2a0", "#ffa8c5", "#c9b6ff"]
 
 
@@ -208,7 +248,8 @@ class Overlay:
         import tkinter as tk
         from tkinter import font as tkfont
         self.tk, self.cfg, self.out_q, self.stop = tk, cfg, out_q, stop
-        self.finals, self.partial, self.status = [], "", "Starting…"  # finals: [text, speaker]
+        self.finals, self.partial, self.status = [], ("", ""), "Starting…"
+        # finals: [english, speaker, spanish]   partial: (english, spanish)
 
         self.root = root = tk.Tk()
         root.title("Live Translate    " + HELP)
@@ -216,16 +257,22 @@ class Overlay:
         root.attributes("-topmost", True)
         root.attributes("-alpha", cfg["opacity"])
         self.font = tkfont.Font(family="Helvetica Neue", size=cfg["font_size"])
-        self.text = tk.Text(root, wrap="word", bg="#111111", fg="#ffffff",
-                            font=self.font, bd=0, highlightthickness=0,
-                            padx=16, pady=8, cursor="arrow", takefocus=0,
-                            spacing1=2, spacing3=2)
-        self.text.tag_configure("partial", foreground="#8a8f98")
-        for i, color in enumerate(SPEAKER_COLORS):
-            self.text.tag_configure(f"spk{i}", foreground=color)
-        self.text.tag_configure("status", foreground="#777777")
-        self.text.pack(fill="both", expand=True)
-        self.text.configure(state="disabled")
+        def column():
+            t = tk.Text(root, wrap="word", bg="#111111", fg="#ffffff",
+                        font=self.font, bd=0, highlightthickness=0,
+                        padx=16, pady=8, cursor="arrow", takefocus=0,
+                        spacing1=2, spacing2=4, spacing3=2)
+            t.tag_configure("partial", foreground="#8a8f98")
+            for i, color in enumerate(SPEAKER_COLORS):
+                t.tag_configure(f"spk{i}", foreground=color)
+            t.tag_configure("status", foreground="#777777")
+            t.configure(state="disabled")
+            return t
+        self.spanish = column()   # left column, only in two-column mode
+        self.text = column()      # English
+        root.configure(bg="#333333")  # shows as a thin line between the columns
+        root.grid_rowconfigure(0, weight=1)
+        self.layout()
 
         self.place()
         root.bind("<Key>", self.on_key)
@@ -233,6 +280,16 @@ class Overlay:
         root.protocol("WM_DELETE_WINDOW", self.quit)
         self.render()
         root.after(80, self.poll)
+
+    def layout(self):
+        two = self.cfg["two_columns"]
+        self.root.grid_columnconfigure(0, weight=1 if two else 0, uniform="col" if two else "")
+        self.root.grid_columnconfigure(1, weight=1, uniform="col" if two else "")
+        if two:
+            self.spanish.grid(row=0, column=0, sticky="nsew", padx=(0, 1))
+        else:
+            self.spanish.grid_remove()
+        self.text.grid(row=0, column=1, sticky="nsew")
 
     def height(self):
         return self.cfg["lines"] * (self.font.metrics("linespace") + 4) + 18
@@ -274,14 +331,17 @@ class Overlay:
             top = c["y"] is not None and c["y"] < self.root.winfo_screenheight() // 2
             c["y"] = (self.root.winfo_screenheight() - self.height() - 110) if top else 40
         elif k in ("c", "C"):
-            self.finals, self.partial = [], ""
+            self.finals, self.partial = [], ("", "")
             return self.render()
+        elif k == "2":
+            c["two_columns"] = not c["two_columns"]
         elif k in ("s", "S"):
             c["speaker_colors"] = not c["speaker_colors"]
         else:
             return
         self.font.configure(size=c["font_size"])
         self.root.attributes("-alpha", c["opacity"])
+        self.layout()
         self.place()
         self.render()
         save_settings(c)
@@ -290,7 +350,7 @@ class Overlay:
         changed = False
         try:
             while True:
-                kind, text = self.out_q.get_nowait()
+                kind, text = self.out_q.get_nowait()  # text: a string, or (english, spanish)
                 changed = True
                 if kind == "status":
                     self.status = text
@@ -300,9 +360,9 @@ class Overlay:
                     if self.finals:
                         self.finals[-1][1] = text
                 else:
-                    self.partial = ""
-                    if text:
-                        self.finals = (self.finals + [[text, None]])[-40:]
+                    self.partial = ("", "")
+                    if text[0]:
+                        self.finals = (self.finals + [[text[0], None, text[1]]])[-40:]
         except queue.Empty:
             pass
         if changed:
@@ -310,20 +370,51 @@ class Overlay:
         self.root.after(80, self.poll)
 
     def render(self):
-        t = self.text
-        t.configure(state="normal")
-        t.delete("1.0", "end")
-        if self.finals or self.partial:
-            colors = self.cfg["speaker_colors"]
-            for i, (phrase, spk) in enumerate(self.finals):
-                tag = f"spk{spk % len(SPEAKER_COLORS)}" if colors and spk is not None else ()
-                t.insert("end", (" " if i else "") + phrase, tag)
-            if self.partial:
-                t.insert("end", (" " if self.finals else "") + self.partial, "partial")
+        cols = [self.spanish, self.text] if self.cfg["two_columns"] else [self.text]
+        for t in cols:
+            t.configure(state="normal")
+            t.delete("1.0", "end")
+        if not (self.finals or self.partial[0]):
+            self.text.insert("end", self.status, "status")
+        elif len(cols) == 1:
+            self.render_flow()
         else:
-            t.insert("end", self.status, "status")
-        t.configure(state="disabled")
-        t.see("end")
+            self.render_rows()
+        for t in cols:
+            t.configure(state="disabled")
+            t.see("end")
+
+    def tag(self, spk):
+        if self.cfg["speaker_colors"] and spk is not None:
+            return f"spk{spk % len(SPEAKER_COLORS)}"
+        return ()
+
+    def render_flow(self):
+        """One column: English phrases flow as one paragraph."""
+        t = self.text
+        for i, (phrase, spk, _) in enumerate(self.finals):
+            t.insert("end", (" " if i else "") + phrase, self.tag(spk))
+        if self.partial[0]:
+            t.insert("end", (" " if self.finals else "") + self.partial[0], "partial")
+
+    def render_rows(self):
+        """Two columns: each phrase is a row. Spanish left, English right, tops aligned."""
+        self.root.update_idletasks()  # the wrap width must be current
+        rows = [(es, en, self.tag(spk)) for en, spk, es in self.finals[-12:]]
+        if self.partial[0]:
+            rows.append((self.partial[1], self.partial[0], "partial"))
+        for n, (es, en, tag) in enumerate(rows):
+            lines = []
+            for t, phrase in ((self.spanish, es), (self.text, en)):
+                if n:
+                    t.insert("end", "\n")
+                start = t.index("end-1c")
+                t.insert("end", phrase, tag)
+                count = t.count(start, "end-1c", "displaylines")
+                lines.append((count[0] if isinstance(count, tuple) else count or 0) + 1)
+            # Blank lines under the shorter side keep the next row aligned.
+            for t, have in zip((self.spanish, self.text), lines):
+                t.insert("end", "\n" * (max(lines) - have))
 
     def quit(self):
         self.stop.set()

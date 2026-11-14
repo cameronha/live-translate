@@ -3,9 +3,27 @@
 <plist version="1.0">
 <dict>
 	<key>files</key>
-	<dict/>
+	<dict>
+		<key>Resources/AppIcon.icns</key>
+		<data>
+		Js9P8ytxqa7TNfD09OyD6leacwI=
+		</data>
+	</dict>
 	<key>files2</key>
-	<dict/>
+	<dict>
+		<key>MacOS/python</key>
+		<dict>
+			<key>symlink</key>
+			<string>/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python</string>
+		</dict>
+		<key>Resources/AppIcon.icns</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			W+E35Arm2UNaql3//N9un1G6HbBvxfK8SRFKr8k31TA=
+			</data>
+		</dict>
+	</dict>
 	<key>rules</key>
 	<dict>
 		<key>^Resources/</key>

@@ -1,4 +1,4 @@
-// Tiny native starter for Live Translate.app. It starts translate.py and waits.
+// Tiny native starter for Live Translate.app. It starts translate.py.
 // A real Apple silicon program here lets macOS show the microphone request for this app.
 #include <fcntl.h>
 #include <limits.h>
@@ -6,7 +6,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 #include <unistd.h>
 int main(void) {
     char raw[PATH_MAX], dir[PATH_MAX];
@@ -18,14 +17,11 @@ int main(void) {
         *slash = 0;
     }
     if (chdir(dir) != 0) return 1;
-    pid_t child = fork();
-    if (child == 0) {
-        int fd = open("last-run.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); }
-        execl("venv/bin/python", "python", "translate.py", (char *)NULL);
-        _exit(127);
-    }
-    int status;
-    waitpid(child, &status, 0);
-    return 0;
+    // Run Python through a link inside this app. macOS then shows the overlay
+    // as "Live Translate" with this app's icon, not as "Python".
+    setenv("PYTHONPATH", "venv/lib/python3.12/site-packages", 1);
+    int fd = open("last-run.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { dup2(fd, 1); dup2(fd, 2); }
+    execl("Live Translate.app/Contents/MacOS/python", "python", "translate.py", (char *)NULL);
+    return 127;
 }

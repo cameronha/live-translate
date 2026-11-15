@@ -2,6 +2,13 @@
 
 A floating caption strip for the Mac. It listens to the laptop microphone and shows Spanish speech as English text. All work is local. No cloud, no API keys, no saved audio or text.
 
+## Limits
+
+- Spanish to English only. Apple silicon Mac only.
+- The delay is about 2 seconds. The translation is rough: good enough to follow a meeting, not to quote a person.
+- The speaker colors are a guess for each phrase.
+- First start: macOS asks for microphone permission. Click Allow.
+
 ## Use
 
 - Start: click `Live Translate.app` (or double-click `Start Translator.command`).
@@ -41,3 +48,7 @@ Test without a microphone:
 
 - Font: Atkinson Hyperlegible (SIL Open Font License, see `fonts/OFL.txt`).
 - Speech: faster-whisper. Voiceprints: WeSpeaker (CC BY 4.0).
+
+## License
+
+MIT. See `LICENSE`. The font and the models have their own licenses (see Credits).

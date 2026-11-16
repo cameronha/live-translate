@@ -200,7 +200,11 @@ def engine(audio_q, out_q, stop, cfg):
         else:
             seg = buf[start:]
             kind = "partial"
+        t_call = time.time()
         text, spanish = translate(seg)
+        # Timing only (no words): lets us see after a meeting where the delay comes from.
+        print(f"timing {kind:7s} audio={len(seg) / SR:4.1f}s compute={time.time() - t_call:4.1f}s "
+              f"waiting={audio_q.qsize()}", file=sys.stderr, flush=True)
         # After a cut in the middle, look at the rest of the buffer without delay.
         checked = max(0, len(buf) - step) if gap is not None else len(buf)
         if text or showing_partial:
